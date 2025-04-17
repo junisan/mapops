@@ -5,6 +5,8 @@ services:
   nominatim:
     image: mediagis/nominatim:5.0
     container_name: nominatim
+    environment:
+      PBF_PATH: "/data/map.osm.pbf"
     expose:
       - "5432"                  # Postgres
     ports:

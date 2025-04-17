@@ -1,0 +1,12 @@
+#https://github.com/GIScience/openrouteservice/blob/releases/v9.1.2/ors-config.yml
+
+ors:
+  engine:
+    profile_default:
+      build:
+        source_file: /home/ors/files/map.osm.pbf
+      parameters:
+        elevation: false
+    profiles:
+      driving-car:
+        enabled: true

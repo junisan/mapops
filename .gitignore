@@ -1,5 +1,6 @@
 **/*.osm.*
 
+ors/config/ors-config.yml
 ors/elevation_cache/*
 ors/graphs/*
 ors/logs/*
@@ -9,3 +10,6 @@ ors/logs/*
 !ors/logs/.gitkeep
 
 docker-compose.override.yml
+
+nominatim-data
+photon-data

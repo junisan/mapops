@@ -15,12 +15,15 @@ services:
 
   photon-importer:
     image: local/pothon
-    build: ./importer/
+    build:
+      context: ./importer/
+      args:
+        PHOTON_VERSION: 0.6.2
     command: "import"
     container_name: photon-importer
     env_file: "importer/vars.env"
     depends_on:
-      - nominatim
+      - nominatim-importer
     volumes:
       - ./photon-data:/photon
     networks:
