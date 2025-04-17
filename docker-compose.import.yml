@@ -14,7 +14,7 @@ services:
       - mapops
 
   photon-importer:
-    image: local/photon
+    image: junisan/photon:0.6.2
     build:
       context: ./importer/
       args:
