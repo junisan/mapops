@@ -1,0 +1,11 @@
+**/*.osm.*
+
+ors/elevation_cache/*
+ors/graphs/*
+ors/logs/*
+
+!ors/elevation_cache/.gitkeep
+!ors/graphs/.gitkeep
+!ors/logs/.gitkeep
+
+docker-compose.override.yml

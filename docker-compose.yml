@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  #https://github.com/mediagis/nominatim-docker/tree/master/5.1
+  nominatim:
+    image: mediagis/nominatim:5.0
+    container_name: nominatim
+    expose:
+      - "5432"                  # Postgres
+    ports:
+      - "127.0.0.1:8080:8080"   # API
+    volumes:
+      - ./nominatim-data:/var/lib/postgresql/16/main
+    networks:
+      - mapops
+
+  photon:
+    image: local/pothon        # Created when import data (docker-compose.import.yml)
+    container_name: photon
+    command: ""
+    ports:
+      - "127.0.0.1:2322:2322"  # API
+    volumes:
+      - ./photon-data:/photon
+    networks:
+      - mapops
+
+  ors:
+    image: openrouteservice/openrouteservice:v9.1.2
+    container_name: ors
+    ports:
+      - "8082:8082"  # Expose the ORS API
+      - "9001:9001"  # Expose additional port for monitoring (optional)
+    
+    user: "1000:1000" # Run "mkdir -p ors-docker/config ors-docker/elevation_cache ors-docker/files ors-docker/graphs ors-docker/logs && sudo chown -R 1000:1000 ors" before starting the container!
+    volumes:
+      - ./ors:/home/ors  # Mount the ORS application directory (for logs, graphs, elevation_cache, etc.) into its own directory
+
+    environment:
+      REBUILD_GRAPHS: False  # Set to True to rebuild graphs on container start.
+      CONTAINER_LOG_LEVEL: WARNING  # Log level for the container. Possible values: DEBUG, INFO, WARNING, ERROR, CRITICAL
+      #ORS_CONFIG_LOCATION: /home/ors/config/my-ors-config.yml  # Location of your ORS configuration file in the docker container
+
+      XMS: 1g  # start RAM assigned to java
+      XMX: 8g  # max RAM assigned to java. Rule of Thumb: <PBF-size> * <profiles> * 2
+      ADDITIONAL_JAVA_OPTS: ""  # further options you want to pass to the java command
+
+    networks:
+      - mapops
+
+networks:
+  mapops:
+    attachable: true
+    name: mapops
