@@ -17,9 +17,9 @@ services:
       - mapops
 
   photon:
-    image: local/pothon        # Created when import data (docker-compose.import.yml)
+    image: local/photon        # Created when import data (docker-compose.import.yml)
     container_name: photon
-    command: ""
+    user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "127.0.0.1:2322:2322"  # API
     volumes:

@@ -1,34 +1,35 @@
-FROM openjdk:17-slim
+FROM eclipse-temurin:17-jdk as builder
 
 ARG PHOTON_VERSION=0.6.2
 ENV PHOTON_VERSION=${PHOTON_VERSION}
+WORKDIR /build
 
-WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y wget && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y wget ca-certificates && \
+    wget -O photon.jar https://github.com/komoot/photon/releases/download/${PHOTON_VERSION}/photon-${PHOTON_VERSION}.jar
 
-RUN wget -O photon.jar https://github.com/komoot/photon/releases/download/${PHOTON_VERSION}/photon-${PHOTON_VERSION}.jar
+COPY PhotonLauncher.java .
+RUN javac PhotonLauncher.java && \
+    jar cfe launcher.jar PhotonLauncher PhotonLauncher.class && \
+    mkdir -p /build/photon
 
-ENV DB_HOST=nominatim
-ENV DB_PORT=5432
-ENV DB_NAME=nominatim
-ENV DB_USER=nominatim
-ENV DB_PASSWORD=nominatim
 
-ENTRYPOINT [ "bash", "-c", "\
-  if [ \"$1\" = \"import\" ]; then \
-    java -jar photon.jar \
-      -data-dir /photon \
-      -nominatim-import \
-      -host $DB_HOST \
-      -port $DB_PORT \
-      -database $DB_NAME \
-      -user $DB_USER \
-      -password $DB_PASSWORD \
-      -languages de,en,fr,es && \
-      echo '✅ Imported. Exiting'; \
-  else \
-    java -jar photon.jar -data-dir /photon; \
-  fi", "bash" ]
+###
+FROM gcr.io/distroless/java17-debian11
+
+USER nonroot
+WORKDIR /app
+
+COPY --from=builder --chown=nonroot:nonroot /build/photon.jar /app/photon.jar
+COPY --from=builder --chown=nonroot:nonroot /build/launcher.jar /app/launcher.jar
+COPY --from=builder --chown=nonroot:nonroot /build/photon /photon
+
+ENV DB_HOST=nominatim \
+    DB_PORT=5432 \
+    DB_NAME=nominatim \
+    DB_USER=nominatim \
+    DB_PASSWORD=nominatim \
+    PHOTON_LANGUAGES=de,en,fr,es
+
+ENTRYPOINT ["java", "-jar", "/app/launcher.jar"]

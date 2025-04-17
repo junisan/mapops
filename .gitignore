@@ -11,5 +11,7 @@ ors/logs/*
 
 docker-compose.override.yml
 
-nominatim-data
-photon-data
+nominatim-data/*
+!nominatim-data/.gitkeep
+photon-data/*
+!photon-data/.gitkeep

@@ -14,7 +14,7 @@ services:
       - mapops
 
   photon-importer:
-    image: local/pothon
+    image: local/photon
     build:
       context: ./importer/
       args:
@@ -22,6 +22,7 @@ services:
     command: "import"
     container_name: photon-importer
     env_file: "importer/vars.env"
+    user: "${UID:-1000}:${GID:-1000}"
     depends_on:
       - nominatim-importer
     volumes:
