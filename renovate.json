@@ -1,0 +1,26 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "ghcr.io/junisan/photon is our own image built from importer/ (the Photon version is bumped by hand: ARG PHOTON_VERSION + sha256)",
+      "matchPackageNames": ["ghcr.io/junisan/photon"],
+      "enabled": false
+    },
+    {
+      "description": "Group docker image updates",
+      "matchDatasources": ["docker"],
+      "groupName": "docker images"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Photon releases (ARG PHOTON_VERSION in importer/Dockerfile); when bumping, also update PHOTON_SHA256 with the release digest",
+      "managerFilePatterns": ["/^importer\\/Dockerfile$/"],
+      "matchStrings": ["ARG PHOTON_VERSION=(?<currentValue>.*)"],
+      "depNameTemplate": "komoot/photon",
+      "datasourceTemplate": "github-releases"
+    }
+  ]
+}
