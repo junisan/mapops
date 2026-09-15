@@ -1,45 +1,78 @@
-version: '3.8'
-
+# Host ports use an uncommon range (17070+) so they never clash with other
+# stacks; override them in a .env file (NOMINATIM_PORT, PHOTON_PORT, ORS_PORT,
+# ORS_MONITOR_PORT). Other applications normally do not use these ports: they
+# reach the containers through the `mapops` docker network or through nginx.
 services:
-  #https://github.com/mediagis/nominatim-docker/tree/master/5.1
+  #https://github.com/mediagis/nominatim-docker
   nominatim:
-    image: mediagis/nominatim:5.0
+    image: mediagis/nominatim:5.3
     container_name: nominatim
+    restart: unless-stopped
     environment:
+      # /data is not mounted: imports happen in the importer. The image's
+      # config.sh requires the variable on every start even when unused.
       PBF_PATH: "/data/map.osm.pbf"
     expose:
       - "5432"                  # Postgres
     ports:
-      - "127.0.0.1:8080:8080"   # API
+      - "127.0.0.1:${NOMINATIM_PORT:-17070}:8080"   # API
     volumes:
       - ./nominatim-data:/var/lib/postgresql/16/main
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 2m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
     networks:
       - mapops
 
   photon:
-    image: junisan/photon:0.6.2
+    image: ghcr.io/junisan/photon:1.3.0
     container_name: photon
+    restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     ports:
-      - "127.0.0.1:2322:2322"  # API
+      - "127.0.0.1:${PHOTON_PORT:-17071}:2322"  # API
     volumes:
       - ./photon-data:/photon
+    healthcheck:
+      test: ["CMD", "/usr/bin/wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2322/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 2m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
     networks:
       - mapops
 
   ors:
-    image: openrouteservice/openrouteservice:v9.1.2
+    image: openrouteservice/openrouteservice:v9.10.0
     container_name: ors
+    restart: unless-stopped
     ports:
-      - "127.0.0.1:8082:8082"  # Expose the ORS API
-      - "127.0.0.1:9001:9001"  # Expose additional port for monitoring (optional)
-    
-    user: "1000:1000" # Run "mkdir -p ors-docker/config ors-docker/elevation_cache ors-docker/files ors-docker/graphs ors-docker/logs && sudo chown -R 1000:1000 ors" before starting the container!
+      - "127.0.0.1:${ORS_PORT:-17072}:8082"  # Expose the ORS API
+      - "127.0.0.1:${ORS_MONITOR_PORT:-17073}:9001"  # Expose additional port for monitoring (optional)
+
+    user: "1000:1000" # Run "mkdir -p ors/config ors/elevation_cache ors/graphs ors/logs && sudo chown -R 1000:1000 ors" before starting the container!
     volumes:
-      - ./ors:/home/ors  # Mount the ORS application directory (for logs, graphs, elevation_cache, etc.) into its own directory
+      - ./ors/config:/home/ors/config
+      - ./ors/graphs:/home/ors/graphs
+      - ./ors/elevation_cache:/home/ors/elevation_cache
+      - ./ors/logs:/home/ors/logs
+      - ./maps:/home/ors/files:ro  # Map shared with the Nominatim importer
 
     environment:
-      REBUILD_GRAPHS: False  # Set to True to rebuild graphs on container start.
+      REBUILD_GRAPHS: ${REBUILD_GRAPHS:-False}  # Set to True to rebuild graphs on container start.
       CONTAINER_LOG_LEVEL: WARNING  # Log level for the container. Possible values: DEBUG, INFO, WARNING, ERROR, CRITICAL
       #ORS_CONFIG_LOCATION: /home/ors/config/my-ors-config.yml  # Location of your ORS configuration file in the docker container
 
@@ -47,10 +80,25 @@ services:
       XMX: 8g  # max RAM assigned to java. Rule of Thumb: <PBF-size> * <profiles> * 2
       ADDITIONAL_JAVA_OPTS: ""  # further options you want to pass to the java command
 
+    mem_limit: 10g  # XMX plus off-heap headroom; keeps an ORS OOM from taking down the host
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8082/ors/v2/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 5m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
     networks:
       - mapops
 
 networks:
+  # Network shared with other applications (they declare it as external).
+  # Create it once with: docker network create --attachable mapops
+  # (mapops.sh up/import create it automatically when missing)
   mapops:
-    attachable: true
+    external: true
     name: mapops
