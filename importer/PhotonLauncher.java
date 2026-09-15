@@ -17,12 +17,16 @@ public class PhotonLauncher {
         command.add("java");
         command.add("-jar");
         command.add("/app/photon.jar");
-        command.add("-data-dir");
-        command.add("/photon");
 
+        String password = null;
         if (args.length > 0 && args[0] != null && args[0].trim().equalsIgnoreCase("import")) {
             System.out.println("🔄 Importing from Nominatim...");
-            command.add("-nominatim-import");
+            password = System.getenv("DB_PASSWORD");
+            if (password == null || password.isEmpty()) {
+                System.err.println("❌ Error: DB_PASSWORD is not set");
+                System.exit(1);
+            }
+            command.add("import");
             command.add("-host");
             command.add(System.getenv("DB_HOST"));
             command.add("-port");
@@ -32,22 +36,31 @@ public class PhotonLauncher {
             command.add("-user");
             command.add(System.getenv("DB_USER"));
             command.add("-password");
-            command.add(System.getenv("DB_PASSWORD"));
+            command.add(password);
             command.add("-languages");
             command.add(System.getenv("PHOTON_LANGUAGES"));
         } else {
             System.out.println("🚀 Starting Photon in server mode...");
+            command.add("serve");
+            // Photon 1.x binds to 127.0.0.1 by default; inside the
+            // container it must listen on all interfaces
+            command.add("-listen-ip");
+            command.add("0.0.0.0");
         }
+        command.add("-data-dir");
+        command.add("/photon");
 
         System.out.println("👉 Running command:");
         for (String part : command) {
-            System.out.print(part + " ");
+            // Never print credentials
+            System.out.print((password != null && part.equals(password) ? "********" : part) + " ");
         }
         System.out.println();
 
-        new ProcessBuilder(command)
+        int exitCode = new ProcessBuilder(command)
             .inheritIO()
             .start()
             .waitFor();
+        System.exit(exitCode);
     }
 }
