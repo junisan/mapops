@@ -1,5 +1,10 @@
 **/*.osm.*
 
+importer/vars.env
+
+maps/*
+!maps/.gitkeep
+
 ors/config/ors-config.yml
 ors/elevation_cache/*
 ors/graphs/*
@@ -10,8 +15,13 @@ ors/logs/*
 !ors/logs/.gitkeep
 
 docker-compose.override.yml
+importer/docker-compose.override.yml
+.env
+.mapops-import.lock
+exports/
 
-nominatim-data/*
-!nominatim-data/.gitkeep
+# No .gitkeep here: Postgres initdb requires an EMPTY data directory;
+# docker creates it on demand and the Nominatim image chowns it
+nominatim-data/
 photon-data/*
 !photon-data/.gitkeep
