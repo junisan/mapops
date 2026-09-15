@@ -1,42 +1,106 @@
 # 📍 MapOps
 
-**MapOps** es un entorno de servicios geoespaciales listo para producción. Incluye los siguientes componentes:
+[![CI](https://github.com/junisan/mapops/actions/workflows/ci.yml/badge.svg)](https://github.com/junisan/mapops/actions/workflows/ci.yml)
 
--   **Nominatim** – Servicio de geocodificación directo e inverso.
--   **Photon** – Motor de búsqueda basado en Nominatim.
--   **OpenRouteService (ORS)** – Servicio de rutas y navegación.
-    
-Este repositorio contiene todo lo necesario para importar, inicializar y poner en marcha estos servicios utilizando archivos `.osm.pbf`. Además, se asume que el mapa cargado en ORS será el mismo utilizado por Nominatim y Photon, para mantener la coherencia espacial entre los servicios.
+**MapOps** is a production-ready, self-hosted geospatial services stack. It includes the following components:
 
-Los únicos requisitos que necesita para poner este proyecto en marcha son docker y docker compose para la gestión de los contenedores.
+-   **Nominatim** – Forward and reverse geocoding service.
+-   **Photon** – Search-as-you-type geocoder built on top of Nominatim data.
+-   **OpenRouteService (ORS)** – Routing and navigation service.
+
+This repository contains everything needed to import, initialise and run these services from `.osm.pbf` files. All three services share the same map (`maps/map.osm.pbf`) to keep them spatially consistent.
+
+The only requirements are docker and docker compose.
 
 ---
-## 🗺️ 1. Cargar un mapa
-Todos los servicios requieren un mapa para funcionar: ORS para gestionar la ruta entre dos coordenadas y Nominatim/Photon las etiquetas. El primer paso es descargar un mapa en formato `.osm.pbf` (OpenStreetMap Protocolbuffer).
+## ⚙️ 0. Initial setup
 
-Tiene disponible muchos mapas en [GeoFabrik](https://www.geofabrik.de/data/download.html), ya sea de pequeñas regiones, países o continentes. También puede confeccionar un mapa personalizado recortando una parte de un mapa mayor (por ejemplo dos provincias o regiones) gracias a [BBBike](https://extract.bbbike.org/) . En cualquier caso, cuando tenga el mapa en formato osm.pbf deberá colocarlo en `ors/files/mi_mapa.osm.pbf` . Tenga en cuenta el nombre con el que designa el mapa, ya que lo necesitará para la configuración.
+Create the importer variables file from the example and set your own password for the Nominatim database:
 
-Adicionalmente, si se plantea usarlo en Nominatim/Photon, deberá copiarlo a la carpeta `importer/maps/map.osm.pbf` 
-> **Importante:** El nombre del archivo dentro de `importer/maps/` debe ser exactamente `map.osm.pbf`.
+```sh
+cp importer/vars.env.example importer/vars.env
+openssl rand -hex 16   # generate a password and use it for NOMINATIM_PASSWORD and DB_PASSWORD
+```
 
-## 🚀 ORS. Servicio para el cálculo de rutas
+> **Important:** `importer/vars.env` holds credentials and is gitignored: never commit it. The `mapops` docker network is *attachable*: any container joined to it can reach Nominatim's Postgres, so treat that password as a secret.
 
-Diríjase a `ors/config/`. Allí encontrará archivos de ejemplo para la configuración de ORS: el fichero más extenso posible, el fichero mínimo viable, etc. Recomendamos el uso del fichero mínimo e ir construyendo su propia configuración desde allí. En cualquier caso, deberá definir un fichero `ors-config.yml`. 
-> Recuerde el nombre que le puso a su mapa: tendrá que configurarlo en este fichero.
+Create the shared docker network (other applications join it to consume the services; `mapops.sh` also creates it automatically when missing):
 
-Hecho esto, arranque el contenedor. Le recomendamos que lo arranque en modo "background" para que cuando finalice el proceso, el contenedor siga arrancado. Puede seguir el proceso mediante la visualización de logs con `docker logs`.
+```sh
+docker network create --attachable mapops
+```
+
+Prepare the ORS directories with the right owner:
+
+```sh
+mkdir -p ors/config ors/elevation_cache ors/graphs ors/logs
+sudo chown -R 1000:1000 ors
+```
+
+Host ports are published on `127.0.0.1` only, in an uncommon range so they never clash with other applications: **17070** (Nominatim), **17071** (Photon), **17072** (ORS) and **17073** (ORS monitoring). Override them by creating a `.env` file next to `docker-compose.yml`:
+
+```sh
+# .env (optional)
+MAPOPS_MODE=full
+NOMINATIM_PORT=17070
+PHOTON_PORT=17071
+ORS_PORT=17072
+ORS_MONITOR_PORT=17073
+```
+
+> Other applications normally do not use these ports: they reach the containers through the `mapops` docker network (`http://nominatim:8080`, `http://photon:2322`, `http://ors:8082`) or through the nginx proxy (`nginx.example.conf`). The host ports are for nginx and local troubleshooting.
+
+### Installation modes
+
+Not every installation needs all three services. `MAPOPS_MODE` (in `.env`) selects which components `mapops.sh` manages in `import`, `up`, `down` and `status`:
+
+| Mode | Services | Typical use |
+|---|---|---|
+| `full` (default) | Nominatim + Photon + ORS | The whole stack |
+| `geocoding` | Nominatim + Photon | Full geocoding, no routing |
+| `photon` | Photon only | Autocomplete/lightweight geocoding: Nominatim acts as an ephemeral importer and its data (~30-50 GB for Spain) **is destroyed after each import** (asks for confirmation unless `-y`) |
+| `ors` | ORS only | Routing only |
+
+## 🗺️ 1. Load a map
+
+Every service needs a map: ORS to route between coordinates, Nominatim/Photon for the labels. The map lives at `maps/map.osm.pbf` and is shared by ORS (mounted at `/home/ors/files`) and the Nominatim importer.
+
+The most convenient way is `mapops.sh`, which downloads [Geofabrik](https://download.geofabrik.de/) extracts verifying their md5 and, when you name several regions, merges them with osmium into a single map:
+
+```sh
+./mapops.sh fetch europe/spain                            # one country
+./mapops.sh fetch spain-full                              # alias: Spain + Canary Islands
+./mapops.sh fetch europe/spain/madrid europe/spain/castilla-la-mancha   # individual regions
+./mapops.sh fetch europe/spain africa/canary-islands europe/andorra     # any combination
+```
+
+Any Geofabrik extract path works (continent, country or sub-region; Spain's autonomous communities live under `europe/spain/…` and the Canary Islands separately at `africa/canary-islands`).
+
+> Combined extracts must be from the same day (they overlap at borders); `fetch` downloads them all in a single run and stores a manifest with regions and date at `maps/manifest.txt`.
+
+ORS is not forced to use the same map as Nominatim/Photon: `./mapops.sh fetch --ors <region...>` builds an independent `maps/ors.osm.pbf` (with its own manifest). To use it, point `source_file` in `ors-config.yml` at `/home/ors/files/ors.osm.pbf`. Useful when you want, say, mainland-only routing but geocoding with islands.
+
+You can also place any `.osm.pbf` by hand (for example a [BBBike](https://extract.bbbike.org/) custom extract) at `maps/map.osm.pbf`.
+
+> **Important:** the file name must be exactly `maps/map.osm.pbf`.
+
+## 🚀 2. ORS. Route calculation service
+
+Head to `ors/config/`. You will find example ORS configuration files there: the most exhaustive one, the minimum viable one, etc. We recommend starting from the minimal file and building your own configuration from it. Either way you must define an `ors-config.yml` file and reference the map in it as `files/map.osm.pbf`.
+
+Once done, start the container in detached mode and follow the process with `docker logs`:
 
 ```sh
 docker compose up -d ors
 docker logs -f ors
 ```
 
-Durante el primer arranque, se realizará la importación inicial de datos. Este proceso puede tardar varios minutos para un mapa regional e incluso horas si es un mapa de un país extenso o continentes.
+On first start ORS builds its graphs. This may take several minutes for a regional map and hours for a large country or a continent. To rebuild the graphs after changing the map, start once with `REBUILD_GRAPHS=True docker compose up -d --force-recreate ors` (the `mapops.sh import` script does this automatically).
 
-Cuando el proceso de importación haya finalizado, estará listo para recibir peticiones. Puede verificarlo con una petición como la siguiente (tenga en cuenta las coordenadas de su mapa y el puerto en el que configuró ORS):
+When the process finishes (`curl http://localhost:17072/ors/v2/health` returns `"status":"ready"`), it is ready to serve:
 
 ```sh
-curl -X POST \ "http://localhost:8082/ors/v2/directions/driving-car" \
+curl -X POST "http://localhost:17072/ors/v2/directions/driving-car" \
   -H "Content-Type: application/json" \
   -d '{
     "coordinates": [
@@ -47,99 +111,148 @@ curl -X POST \ "http://localhost:8082/ors/v2/directions/driving-car" \
     "language": "es",
     "units": "km"
   }'
-  ```
-
-## 🌍 Geocodificación: Nominatim y Photon
-Estos servicios permiten determinar las coordenadas de un punto de su mapa a través de un nombre o dirección (geocoding) y viceversa, encontrar el nombre y dirección de unas coordenadas dadas (geocoding inverso). 
-
-Nominatim es un estándar "de-facto" y está mantenido por el equipo de OpenStreetMap. Tiene una precisión muy alta y está muy bien estructurado. Sin embargo, requiere más capacidad de cómputo y no permite hacer autocompletado (ir mostrando al usuario direcciones a medida que escribe en un input).
-
-Para paliar estos problemas está Photon: es menos preciso que Nominatim pero, al usar Elasticsearch, es tremendamente rápido y permite ir autocompletando al usuario. Sin embargo, para poner en marcha Photon, este requiere importar los datos de una base de datos Postgres que usa Nominatim y que mantiene ya estructurada.
-
-Un sistema completo podría ir completando con Photon y, cuando el usuario haya terminado de escribir, recurrir a Nominatim. Este proyecto incluye los dos; luego podrá elegir con cual se queda: uno de ellos o los dos.
-
-### 1. Importación de datos en Nominatim
-Tanto si quiere usar Photon como si quiere usar Nominatim, el primer paso es crear la base de datos Postgres de Nominatim. Para ello, usaremos el docker-compose.import.yml. Este contiene los contenedores efímeros que solo usaremos durante el proceso de importación de datos.
-
-El primer paso es cargar los datos en Nominatim. Asegúrese de que existe el mapa en el directorio `importer/maps/map.osm.pbf`. Hecho esto, arranque el proceso de importación:
 ```
-docker compose -f docker-compose.import.yml up -d nominatim-importer
-docker logs -f nominatim-importer
-``` 
-> Recomendado arrancar el contenedor de nominatim-importer en modo deattach (background) para que cuando acabe la importación, el servidor siga funcionando y permita a Photon conectarse. Puede ver los logs con la herramienta de logs de docker.
 
-Espere hasta ver el siguiente mensaje en los logs:
+## 🌍 3. Geocoding: Nominatim and Photon
+
+These services resolve a name or address into coordinates (geocoding) and, the other way around, find the name and address of given coordinates (reverse geocoding).
+
+Nominatim is the de-facto standard, maintained by the OpenStreetMap team. It is very precise and well structured, but it needs more compute and does not support search-as-you-type autocompletion.
+
+Photon fills that gap: it is less precise than Nominatim but, being built on OpenSearch, it is extremely fast and supports autocompletion. To run, Photon imports its data from the Postgres database that Nominatim keeps already structured.
+
+A complete system can autocomplete with Photon and fall back to Nominatim once the user finishes typing. This project ships both; you can later keep either one or both.
+
+### Unattended import (recommended)
+
+```sh
+./mapops.sh import
+```
+
+The script chains the whole process: stops the production services, wipes the previous data, imports Nominatim, waits for it to finish (healthcheck on `/status`), imports Photon, rebuilds the ORS graphs and brings production back up. It is a **maintenance window**: Nominatim and Photon stay down during the import (hours or days depending on the map); ORS keeps serving the old graphs until the final phase.
+
+To refresh the data later, `./mapops.sh update` repeats `fetch` (reusing the manifest regions) + `import`. An update is always a full reimport: OSM replication diffs do not work with merged maps.
+
+### Manual import (step by step)
+
+<details>
+<summary>Expand the manual procedure</summary>
+
+The import compose lives at `importer/docker-compose.yml` (ephemeral containers, separate from the production compose). It uses the `mapops` network as external: if production has never started on this machine, create it first with `docker network create --attachable mapops`.
+
+#### 3.1 Import data into Nominatim
+
+Make sure the map exists at `maps/map.osm.pbf` and start the importer:
+
+```sh
+docker compose -f importer/docker-compose.yml up -d nominatim-importer
+docker logs -f nominatim-importer
+```
+
+> Start nominatim-importer detached (background) so that when the import finishes the server keeps running and lets Photon connect.
+
+Wait until the logs show:
 ```
 [INFO] Starting gunicorn ...
 [INFO] Listening at: http://0.0.0.0:8080 ...
-``` 
-Esto significa que el proceso de creación y volcado de datos ha finalizado correctamente. Podemos pasar a la importación de datos a Photon. Si no quieres usarlo, puedes saltarte el siguiente paso.
-
-### 2. Importación de datos en Photon
-
->Este paso depende de que Nominatim ya haya completado su proceso de importación, así que asegúrese de haber completado la importación anterior.
-
-En el docker-compose.import.yml viene definido el Dockerfile de Photon, ya que tendremos que crear la imagen nosotros mismos (photon no tiene imagen de docker oficial), pero es un proceso automático. La imagen únicamente descarga los datos de Github e incorpora `wget` como herramienta auxiliar para realizar comprobaciones de salud del servicio. Construyamos la imagen e importemos los datos de Nominatim:
-
 ```
-docker compose -f docker-compose.import.yml up nominatim-importer
-```
-> No use la opción "-d" de up. El contenedor se cerrará automáticamente cuando complete la operación
+This means the database build finished correctly (the container healthcheck turns `healthy` at that point).
 
+#### 3.2 Import data into Photon
 
-La importación comienza cuando vea `[main] INFO de.komoot.photon.nominatim.NominatimConnector - Start importing documents...` . Una vez finalizado, el contenedor se cerrará automáticamente.
-
-Llegados a este punto, Nominatim y Photon ya tiene los datos que necesitan para funcionar en producción, así que pasemos a esa fase.
-
-### 3. Nominatim y Photon en producción
-Tras completar las importaciones de ambos sistemas, ya estamos en condición de arrancar los contenedores de producción. 
-
-`docker compose up -d nominatim photon` 
-
-Puede verificar que todo está funcionando mediante la herramienta de logs de docker. Espere unos segundos y haga las siguientes peticiones vía cUrl para verificar que los servicios están respondiendo.
+Photon has no official docker image, so this project publishes its own: [`ghcr.io/junisan/photon`](https://github.com/junisan/mapops/pkgs/container/photon) (multi-arch amd64/arm64, built by CI from `importer/`; it downloads the official jar verifying its sha256 and ships a static `wget` for healthchecks). It is pulled from GHCR by default; if you prefer building it yourself, `importer/docker-compose.yml` keeps the `build:` context — add `--build` to the command. Import the Nominatim data:
 
 ```sh
-curl "http://localhost:8080/search?q=Madrid&format=json"  # Nominatim 
-curl "http://localhost:2322/api?q=Gran+Vía"  # Photon
+docker compose -f importer/docker-compose.yml up --build photon-importer
 ```
-> Tenga en cuenta la cobertura de su mapa y use direcciones o coordenadas que estén incluidas en su mapa. También tenga en cuenta si cambió los puertos de los contenedores
+> Do not use `-d` here. The container exits by itself when the import completes. Thanks to the healthcheck, this command alone waits for Nominatim to finish its import first.
 
-### 4. Limpieza de importadores y recursos temporales
+The import starts when you see `Start importing documents...`. When it finishes, the container exits automatically.
 
-Llegados a este punto, los contenedores de producción de Nominatim y de Photon están funcionando, por lo que podemos eliminar los contenedores que hemos usado para cargar los datos. También podemos borrar el mapa que usamos para estos dos contenedores. Podemos eliminarlos, ya que no son necesarios para la ejecución de los servicios en producción.
+#### 3.3 Nominatim and Photon in production
+
+With both imports completed, start the production containers:
 
 ```sh
-docker stop nominatim-importer 
-docker rm nominatim-importer
-docker stop photon-importer
-docker rm photon-importer
-
-rm importer/maps/map.osm.pbf
+docker compose up -d nominatim photon
 ```
 
-**(Opcional)**: puede eliminar los datos de Nominatim si no piensa utilizar este servicio (y solo los cargó para que Photon funcionase). En ese caso, y solo en ese caso, podemos borrar los contenedores de Nominatim, los datos generados y la imagen de docker:
+#### 3.4 Importer cleanup
 
+```sh
+docker compose -f importer/docker-compose.yml down
+rm maps/map.osm.pbf   # optional; needed again for the next import
 ```
-docker stop nominatim
-docker rm nominatim
-docker rmi mediagis/nominatim 
+
+</details>
+
+### Verification
+
+```sh
+curl "http://localhost:17070/search?q=Madrid&format=json"  # Nominatim 
+curl "http://localhost:17071/api?q=Gran+Vía"  # Photon
+```
+> Mind your map's coverage and query addresses or coordinates included in it. Also mind any port overrides.
+
+**(Optional)**: you can drop the Nominatim data if you will not use the service (you only loaded it for Photon). In that case, and only then:
+
+```sh
+docker compose stop nominatim
+docker compose rm nominatim
+docker rmi mediagis/nominatim:5.3
 rm -rf nominatim-data
 ```
 
-## 🤝 Contribución
+## 🔁 Builder node and serving node (pack / restore)
 
-Si desea colaborar con este proyecto, abra un *pull request* o cree un *issue* para sugerencias, mejoras o reportes de errores.
+A full reimport can take a day for a large country. To avoid that much downtime, a second node (another machine, or another directory on the same host, with this same repo) can act as the **builder**:
 
-## 📄 Licencia
+```sh
+# Node B (builder): imports and packages
+./mapops.sh update -y
+./mapops.sh pack                 # → exports/mapops-<date>/ with the mode's data
 
-Este proyecto se distribuye bajo los términos de la licencia **GNU General Public License v3.0 (GPLv3)**.
+# Move the bundle to node A (rsync resumes)
+rsync -avP exports/mapops-<date>/ nodeA:/path/mapops/exports/mapops-<date>/
 
-Esto implica que:
+# Node A (serving): restore — its downtime shrinks to the restore time
+./mapops.sh restore exports/mapops-<date> -y
+```
 
-- Puede usar, modificar y redistribuir este software libremente.
-- Cualquier modificación o redistribución debe mantenerse también bajo licencia GPLv3.
-- Debe incluir siempre el texto de la licencia original.
+`pack` stops the services briefly for a consistent snapshot and records the mode, architecture and image versions in `bundle.txt`; `restore` validates all of that before touching anything and replaces the data of the current mode's components.
 
-MapOps incluye componentes licenciados bajo GPLv3 (como Nominatim y OpenRouteService), por lo que esta licencia aplica a todo el conjunto del proyecto.
+> **Architectures**: Photon data and ORS graphs are portable across architectures (Java indexes). `nominatim-data` is a binary Postgres directory and **only moves between nodes of the same architecture** (e.g. arm64→x86_64 is not supported); `restore` rejects it automatically on mismatch. Both nodes must run the same image versions (same commit of this repo).
 
-Para más detalles, consulte el archivo [LICENSE](./LICENSE) o visite [gnu.org/licenses/gpl-3.0](https://www.gnu.org/licenses/gpl-3.0.html).
+## 🩺 Operations
+
+- `./mapops.sh up`, `down` and `status` start, stop and inspect the services of the configured mode (`status` shows health, data sizes and manifests).
+- Every production service has `restart: unless-stopped` and a healthcheck (`/status` on Nominatim and Photon, `/ors/v2/health` on ORS); `docker ps` shows their state.
+- Ports are published on `127.0.0.1` only, range 17070-17073 (configurable via `.env`); other applications go through the `mapops` docker network or a proxy (see `nginx.example.conf`, which includes example rate limiting).
+- Nominatim data stays frozen at the imported map's date. Schedule `./mapops.sh update -y` if you need fresh data (the internal lock prevents overlapping runs):
+  ```cron
+  # Monthly update, 1st day at 03:00
+  0 3 1 * * cd /path/to/mapops && ./mapops.sh update -y >> /var/log/mapops-update.log 2>&1
+  ```
+- `import` checks upfront that there is enough disk (estimated from the PBF; `MAPOPS_SKIP_DISK_CHECK=1` skips it).
+- Cheap rollback: a `./mapops.sh pack` before an `update`/`restore` leaves a bundle of the current data you can return to with `restore`.
+- Container logs rotate on their own (json-file, 10MB × 5).
+
+## 🤝 Contributing
+
+If you want to help, open a *pull request* or create an *issue* with suggestions, improvements or bug reports.
+
+## 📄 License
+
+MapOps — Geospatial Services Platform. Copyright (C) 2025 Juan Nicolás.
+
+This project is distributed under the terms of the **GNU General Public License v3.0 (GPLv3)**.
+
+This means:
+
+- You may use, modify and redistribute this software freely.
+- Any modification or redistribution must remain under GPLv3.
+- You must always include the original license text.
+
+MapOps includes GPLv3-licensed components (such as Nominatim and OpenRouteService), so this license applies to the project as a whole.
+
+For details, see the [LICENSE](./LICENSE) file or visit [gnu.org/licenses/gpl-3.0](https://www.gnu.org/licenses/gpl-3.0.html).
